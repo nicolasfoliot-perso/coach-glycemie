@@ -1,0 +1,11 @@
+.streamlit/secrets.toml
+.DS_Store
+coach_glycemie.db
+coach_glycemie.db-shm
+coach_glycemie.db-wal
+__pycache__/
+*.pyc
+.coach_runtime/
+supabase/.temp/
+Coach Glycémie.app/
+*.command

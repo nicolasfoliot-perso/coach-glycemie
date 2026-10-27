@@ -1,0 +1,6 @@
+streamlit==1.64.0
+altair==6.3.0
+pandas==3.0.5
+httpx==0.28.1
+google-genai==2.23.0
+groq==1.7.0
