@@ -734,15 +734,11 @@ _SESSION_STORAGE_BRIDGE = st.components.v2.component(
     """,
     js="""
     export default function (component) {
-      const { data, parentElement, setTriggerValue } = component
+      const { data, setTriggerValue } = component
       const action = data?.action || ""
       const nonce = data?.nonce || ""
       const storageKey = data?.storage_key || ""
       if (!action || !storageKey) return
-
-      const marker = `${action}:${nonce}`
-      if (parentElement.dataset.lastStorageAction === marker) return
-      parentElement.dataset.lastStorageAction = marker
 
       if (action === "load") {
         let session = null
