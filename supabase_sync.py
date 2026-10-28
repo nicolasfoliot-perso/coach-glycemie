@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import httpx
 
@@ -49,6 +49,37 @@ class SupabaseSession:
 
 class SupabaseSyncError(RuntimeError):
     """Erreur lisible provenant de l'authentification ou de la Data API."""
+
+
+def session_storage_payload(session: SupabaseSession) -> dict[str, str]:
+    """Prépare uniquement les éléments nécessaires pour renouveler une session."""
+    return {
+        "refresh_token": session.refresh_token,
+        "user_id": session.user_id,
+        "email": session.email,
+    }
+
+
+def session_from_storage_payload(
+    project_url: str,
+    publishable_key: str,
+    payload: Mapping[str, Any],
+) -> SupabaseSession:
+    """Reconstruit une session expirée qui devra être renouvelée par Supabase."""
+    refresh_token = str(payload.get("refresh_token") or "").strip()
+    user_id = str(payload.get("user_id") or "").strip()
+    email = str(payload.get("email") or "").strip()
+    if not refresh_token or not user_id:
+        raise ValueError("La session mémorisée est incomplète.")
+    return SupabaseSession(
+        project_url=_base_url(project_url),
+        publishable_key=publishable_key.strip(),
+        access_token="",
+        user_id=user_id,
+        email=email,
+        refresh_token=refresh_token,
+        expires_at=0,
+    )
 
 
 def _base_url(value: str) -> str:

@@ -36,6 +36,8 @@ from supabase_sync import (
     recovery_session_from_token,
     refresh_session,
     request_password_reset,
+    session_from_storage_payload,
+    session_storage_payload,
     sign_in,
     update_password,
 )
@@ -43,6 +45,7 @@ from supabase_sync import (
 
 APP_TITLE = "Coach Glycémie"
 PASSWORD_RESET_REDIRECT_URL = "https://coach-glycemie-nicolas.streamlit.app/"
+BROWSER_SESSION_STORAGE_KEY = "coach_glycemie_supabase_session_v1"
 DB_PATH = Path(__file__).with_name("coach_glycemie.db")
 SECRETS_DIR = Path(__file__).parent / ".streamlit"
 SECRETS_PATH = SECRETS_DIR / "secrets.toml"
@@ -724,6 +727,61 @@ _RECOVERY_HASH_BRIDGE = st.components.v2.component(
 )
 
 
+_SESSION_STORAGE_BRIDGE = st.components.v2.component(
+    "coach_persistent_session_storage_bridge",
+    html="""
+    <span aria-hidden="true" style="display:none"></span>
+    """,
+    js="""
+    export default function (component) {
+      const { data, parentElement, setTriggerValue } = component
+      const action = data?.action || ""
+      const nonce = data?.nonce || ""
+      const storageKey = data?.storage_key || ""
+      if (!action || !storageKey) return
+
+      const marker = `${action}:${nonce}`
+      if (parentElement.dataset.lastStorageAction === marker) return
+      parentElement.dataset.lastStorageAction = marker
+
+      if (action === "load") {
+        let session = null
+        try {
+          const raw = window.localStorage.getItem(storageKey)
+          session = raw ? JSON.parse(raw) : null
+        } catch (_) {
+          window.localStorage.removeItem(storageKey)
+        }
+        setTriggerValue("loaded", {
+          nonce,
+          found: Boolean(session),
+          session,
+        })
+        return
+      }
+
+      if (action === "save") {
+        try {
+          window.localStorage.setItem(
+            storageKey,
+            JSON.stringify(data?.session || {})
+          )
+          setTriggerValue("saved", { nonce, ok: true })
+        } catch (_) {
+          setTriggerValue("saved", { nonce, ok: false })
+        }
+        return
+      }
+
+      if (action === "clear") {
+        window.localStorage.removeItem(storageKey)
+        setTriggerValue("cleared", { nonce, ok: true })
+      }
+    }
+    """,
+)
+
+
 def configured_secret(name: str) -> str:
     """Lit un secret public de configuration sans exposer sa valeur."""
     try:
@@ -735,6 +793,99 @@ def configured_secret(name: str) -> str:
 def active_cloud_session() -> SupabaseSession | None:
     session = st.session_state.get("supabase_session")
     return session if isinstance(session, SupabaseSession) else None
+
+
+def queue_browser_session_action(
+    action: str,
+    session: SupabaseSession | None = None,
+) -> None:
+    """Programme une écriture ou suppression de session dans ce navigateur."""
+    payload: dict[str, Any] = {
+        "action": action,
+        "nonce": f"{action}-{datetime.now().timestamp()}",
+    }
+    if action == "save" and session is not None:
+        payload["session"] = session_storage_payload(session)
+    st.session_state["browser_session_action"] = payload
+
+
+def process_persisted_cloud_session(
+    project_url: str,
+    publishable_key: str,
+) -> None:
+    """Restaure ou met à jour la session choisie sur cet appareil personnel."""
+    pending = st.session_state.get("browser_session_action")
+    if isinstance(pending, dict):
+        action = str(pending.get("action") or "")
+        nonce = str(pending.get("nonce") or "")
+        result = _SESSION_STORAGE_BRIDGE(
+            key="persistent_cloud_session_bridge",
+            data={
+                "action": action,
+                "nonce": nonce,
+                "storage_key": BROWSER_SESSION_STORAGE_KEY,
+                "session": pending.get("session") or {},
+            },
+            on_loaded_change=lambda: None,
+            on_saved_change=lambda: None,
+            on_cleared_change=lambda: None,
+        )
+        acknowledgement = getattr(
+            result,
+            {"save": "saved", "clear": "cleared"}.get(action, "loaded"),
+            None,
+        )
+        if isinstance(acknowledgement, dict) and str(
+            acknowledgement.get("nonce") or ""
+        ) == nonce:
+            st.session_state.pop("browser_session_action", None)
+            if action == "save" and not acknowledgement.get("ok", False):
+                st.session_state["persistent_session_error"] = (
+                    "Safari n'a pas pu mémoriser la session sur cet appareil."
+                )
+        return
+
+    if st.session_state.get("persistent_session_checked"):
+        return
+
+    restore_nonce = "restore-v1"
+    result = _SESSION_STORAGE_BRIDGE(
+        key="persistent_cloud_session_bridge",
+        data={
+            "action": "load",
+            "nonce": restore_nonce,
+            "storage_key": BROWSER_SESSION_STORAGE_KEY,
+        },
+        on_loaded_change=lambda: None,
+        on_saved_change=lambda: None,
+        on_cleared_change=lambda: None,
+    )
+    loaded = getattr(result, "loaded", None)
+    if not isinstance(loaded, dict) or loaded.get("nonce") != restore_nonce:
+        return
+
+    st.session_state["persistent_session_checked"] = True
+    if not loaded.get("found") or not isinstance(loaded.get("session"), dict):
+        return
+
+    try:
+        remembered_session = session_from_storage_payload(
+            project_url,
+            publishable_key,
+            loaded["session"],
+        )
+        remembered_session = refresh_session(remembered_session)
+    except (TypeError, ValueError, SupabaseSyncError):
+        queue_browser_session_action("clear")
+        st.session_state["persistent_session_error"] = (
+            "La session mémorisée a expiré. Reconnectez-vous une fois."
+        )
+    else:
+        st.session_state["supabase_session"] = remembered_session
+        st.session_state["cloud_login_email"] = remembered_session.email
+        st.session_state["remember_cloud_session"] = True
+        queue_browser_session_action("save", remembered_session)
+    st.rerun()
 
 
 def capture_password_recovery_session(
@@ -779,6 +930,7 @@ def require_cloud_login() -> SupabaseSession:
         st.stop()
 
     capture_password_recovery_session(project_url, publishable_key)
+    process_persisted_cloud_session(project_url, publishable_key)
 
     session = active_cloud_session()
     if session is not None and session.expires_at:
@@ -786,6 +938,9 @@ def require_cloud_login() -> SupabaseSession:
             try:
                 session = refresh_session(session)
                 st.session_state["supabase_session"] = session
+                if st.session_state.get("remember_cloud_session"):
+                    queue_browser_session_action("save", session)
+                    st.rerun()
             except SupabaseSyncError:
                 st.session_state.pop("supabase_session", None)
                 session = None
@@ -846,6 +1001,8 @@ def require_cloud_login() -> SupabaseSession:
                         st.session_state["cloud_login_email"] = recovery_session.email
                         st.session_state.pop("password_recovery_session", None)
                         st.session_state.pop("password_recovery_error", None)
+                        st.session_state["remember_cloud_session"] = False
+                        queue_browser_session_action("clear")
                         st.session_state["cloud_auth_view"] = "login"
                         st.rerun()
                     except SupabaseSyncError as error:
@@ -926,6 +1083,10 @@ def require_cloud_login() -> SupabaseSession:
                 "Utilisez l'adresse et le mot de passe créés pour le Coach. "
                 "Le mot de passe n'est pas conservé."
             )
+            if persistent_error := st.session_state.pop(
+                "persistent_session_error", ""
+            ):
+                st.info(persistent_error)
             with st.form("supabase_login_form", clear_on_submit=False):
                 email = st.text_input(
                     "Adresse e-mail",
@@ -936,6 +1097,14 @@ def require_cloud_login() -> SupabaseSession:
                     "Mot de passe",
                     type="password",
                     autocomplete="current-password",
+                )
+                remember_session = st.checkbox(
+                    "Rester connecté sur cet appareil personnel",
+                    value=False,
+                    help=(
+                        "Le mot de passe n'est jamais enregistré. Seule une session "
+                        "Supabase renouvelable est conservée dans ce navigateur."
+                    ),
                 )
                 submitted = st.form_submit_button(
                     "Me connecter",
@@ -948,13 +1117,19 @@ def require_cloud_login() -> SupabaseSession:
                     st.warning("Indiquez votre adresse e-mail et votre mot de passe.")
                 else:
                     try:
-                        st.session_state["supabase_session"] = sign_in(
+                        signed_in_session = sign_in(
                             project_url,
                             publishable_key,
                             email,
                             password,
                         )
+                        st.session_state["supabase_session"] = signed_in_session
                         st.session_state["cloud_login_email"] = email
+                        st.session_state["remember_cloud_session"] = remember_session
+                        queue_browser_session_action(
+                            "save" if remember_session else "clear",
+                            signed_in_session if remember_session else None,
+                        )
                         st.rerun()
                     except (ValueError, SupabaseSyncError) as error:
                         st.error(f"Connexion impossible : {error}")
@@ -4652,6 +4827,9 @@ with st.sidebar:
         key="logout_cloud_session",
     ):
         st.session_state.pop("supabase_session", None)
+        st.session_state["remember_cloud_session"] = False
+        st.session_state["persistent_session_checked"] = True
+        queue_browser_session_action("clear")
         st.rerun()
     st.caption("Les nouvelles données sont enregistrées directement dans Supabase.")
     st.divider()

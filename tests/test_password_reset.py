@@ -7,6 +7,8 @@ from supabase_sync import (
     SupabaseSession,
     recovery_session_from_token,
     request_password_reset,
+    session_from_storage_payload,
+    session_storage_payload,
     update_password,
 )
 
@@ -80,6 +82,44 @@ class PasswordResetTests(unittest.TestCase):
             put.call_args.kwargs["headers"]["Authorization"],
             "Bearer access-token",
         )
+
+    def test_persistent_session_never_stores_password_or_access_token(self) -> None:
+        session = SupabaseSession(
+            project_url=self.url,
+            publishable_key=self.key,
+            access_token="short-lived-access-token",
+            user_id="user-1",
+            email="user@example.com",
+            refresh_token="renewable-refresh-token",
+        )
+
+        payload = session_storage_payload(session)
+
+        self.assertEqual(
+            payload,
+            {
+                "refresh_token": "renewable-refresh-token",
+                "user_id": "user-1",
+                "email": "user@example.com",
+            },
+        )
+        self.assertNotIn("access_token", payload)
+        self.assertNotIn("password", payload)
+
+    def test_persistent_session_is_rebuilt_expired_for_server_refresh(self) -> None:
+        session = session_from_storage_payload(
+            self.url,
+            self.key,
+            {
+                "refresh_token": "renewable-refresh-token",
+                "user_id": "user-1",
+                "email": "user@example.com",
+            },
+        )
+
+        self.assertEqual(session.access_token, "")
+        self.assertEqual(session.expires_at, 0)
+        self.assertEqual(session.refresh_token, "renewable-refresh-token")
 
 
 if __name__ == "__main__":
