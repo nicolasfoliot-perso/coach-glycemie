@@ -34,7 +34,10 @@ from supabase_sync import (
     SupabaseSession,
     SupabaseSyncError,
     refresh_session,
+    request_password_reset,
     sign_in,
+    update_password,
+    verify_recovery_code,
 )
 
 
@@ -728,44 +731,160 @@ def require_cloud_login() -> SupabaseSession:
         """,
         unsafe_allow_html=True,
     )
+    st.session_state.setdefault("cloud_auth_view", "login")
     with st.container(border=True):
-        st.subheader("Ouvrir mon journal")
-        st.caption(
-            "Utilisez l'adresse et le mot de passe créés pour le Coach. "
-            "Le mot de passe n'est pas conservé."
-        )
-        with st.form("supabase_login_form", clear_on_submit=False):
-            email = st.text_input(
-                "Adresse e-mail",
-                value=str(st.session_state.get("cloud_login_email", "")),
-                autocomplete="email",
-            ).strip()
-            password = st.text_input(
-                "Mot de passe",
-                type="password",
-                autocomplete="current-password",
+        if st.session_state["cloud_auth_view"] == "reset":
+            st.subheader("Réinitialiser mon mot de passe")
+            st.caption(
+                "Recevez un code à six chiffres par e-mail, puis choisissez "
+                "un nouveau mot de passe."
             )
-            submitted = st.form_submit_button(
-                "Me connecter",
-                type="primary",
-                icon=":material/login:",
-                width="stretch",
-            )
-        if submitted:
-            if not email or not password:
-                st.warning("Indiquez votre adresse e-mail et votre mot de passe.")
-            else:
-                try:
-                    st.session_state["supabase_session"] = sign_in(
-                        project_url,
-                        publishable_key,
-                        email,
-                        password,
+            with st.form("password_reset_request_form", clear_on_submit=False):
+                reset_email = st.text_input(
+                    "Adresse e-mail du Coach",
+                    value=str(
+                        st.session_state.get(
+                            "password_reset_email",
+                            st.session_state.get("cloud_login_email", ""),
+                        )
+                    ),
+                    autocomplete="email",
+                    key="password_reset_email_input",
+                ).strip()
+                reset_requested = st.form_submit_button(
+                    "Recevoir mon code",
+                    type="primary",
+                    icon=":material/mail:",
+                    width="stretch",
+                )
+            if reset_requested:
+                if not reset_email:
+                    st.warning("Indiquez votre adresse e-mail.")
+                else:
+                    try:
+                        request_password_reset(
+                            project_url,
+                            publishable_key,
+                            reset_email,
+                        )
+                        st.session_state["password_reset_email"] = reset_email
+                        st.session_state["password_reset_requested"] = True
+                        st.success(
+                            "Si cette adresse correspond au Coach, un e-mail "
+                            "contenant le code vient d'être envoyé."
+                        )
+                    except (ValueError, SupabaseSyncError) as error:
+                        st.error(f"Envoi impossible : {error}")
+
+            if st.session_state.get("password_reset_requested"):
+                st.divider()
+                with st.form("password_reset_confirm_form", clear_on_submit=False):
+                    recovery_code = st.text_input(
+                        "Code à six chiffres",
+                        max_chars=6,
+                        autocomplete="one-time-code",
+                    ).strip()
+                    new_password = st.text_input(
+                        "Nouveau mot de passe",
+                        type="password",
+                        autocomplete="new-password",
                     )
-                    st.session_state["cloud_login_email"] = email
-                    st.rerun()
-                except (ValueError, SupabaseSyncError) as error:
-                    st.error(f"Connexion impossible : {error}")
+                    confirm_password = st.text_input(
+                        "Confirmer le nouveau mot de passe",
+                        type="password",
+                        autocomplete="new-password",
+                    )
+                    reset_confirmed = st.form_submit_button(
+                        "Changer mon mot de passe",
+                        type="primary",
+                        icon=":material/lock_reset:",
+                        width="stretch",
+                    )
+                if reset_confirmed:
+                    if not re.fullmatch(r"\d{6}", recovery_code):
+                        st.warning("Le code doit contenir exactement six chiffres.")
+                    elif len(new_password) < 8:
+                        st.warning(
+                            "Choisissez un mot de passe d'au moins huit caractères."
+                        )
+                    elif new_password != confirm_password:
+                        st.warning("Les deux mots de passe ne correspondent pas.")
+                    else:
+                        try:
+                            recovery_session = verify_recovery_code(
+                                project_url,
+                                publishable_key,
+                                str(st.session_state["password_reset_email"]),
+                                recovery_code,
+                            )
+                            update_password(recovery_session, new_password)
+                            st.session_state["supabase_session"] = recovery_session
+                            st.session_state["cloud_login_email"] = (
+                                recovery_session.email
+                            )
+                            st.session_state.pop("password_reset_requested", None)
+                            st.session_state["cloud_auth_view"] = "login"
+                            st.rerun()
+                        except (ValueError, SupabaseSyncError) as error:
+                            st.error(
+                                "Le code est invalide ou expiré. Demandez un "
+                                f"nouveau code puis réessayez. Détail : {error}"
+                            )
+
+            if st.button(
+                "Retour à la connexion",
+                icon=":material/arrow_back:",
+                width="stretch",
+                key="back_to_cloud_login",
+            ):
+                st.session_state["cloud_auth_view"] = "login"
+                st.rerun()
+        else:
+            st.subheader("Ouvrir mon journal")
+            st.caption(
+                "Utilisez l'adresse et le mot de passe créés pour le Coach. "
+                "Le mot de passe n'est pas conservé."
+            )
+            with st.form("supabase_login_form", clear_on_submit=False):
+                email = st.text_input(
+                    "Adresse e-mail",
+                    value=str(st.session_state.get("cloud_login_email", "")),
+                    autocomplete="email",
+                ).strip()
+                password = st.text_input(
+                    "Mot de passe",
+                    type="password",
+                    autocomplete="current-password",
+                )
+                submitted = st.form_submit_button(
+                    "Me connecter",
+                    type="primary",
+                    icon=":material/login:",
+                    width="stretch",
+                )
+            if submitted:
+                if not email or not password:
+                    st.warning("Indiquez votre adresse e-mail et votre mot de passe.")
+                else:
+                    try:
+                        st.session_state["supabase_session"] = sign_in(
+                            project_url,
+                            publishable_key,
+                            email,
+                            password,
+                        )
+                        st.session_state["cloud_login_email"] = email
+                        st.rerun()
+                    except (ValueError, SupabaseSyncError) as error:
+                        st.error(f"Connexion impossible : {error}")
+            if st.button(
+                "Mot de passe oublié ?",
+                icon=":material/lock_reset:",
+                width="stretch",
+                key="open_password_reset",
+            ):
+                st.session_state["cloud_auth_view"] = "reset"
+                st.rerun()
     st.stop()
 
 

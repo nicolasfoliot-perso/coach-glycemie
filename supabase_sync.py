@@ -133,6 +133,72 @@ def sign_in(
     )
 
 
+def request_password_reset(
+    project_url: str,
+    publishable_key: str,
+    email: str,
+) -> None:
+    """Demande l'envoi d'un code de recuperation sans reveler le compte."""
+    url = _base_url(project_url)
+    response = httpx.post(
+        f"{url}/auth/v1/recover",
+        headers=_auth_headers(publishable_key),
+        json={"email": email.strip()},
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        raise SupabaseSyncError(_error_detail(response))
+
+
+def verify_recovery_code(
+    project_url: str,
+    publishable_key: str,
+    email: str,
+    code: str,
+) -> SupabaseSession:
+    """Echange le code recu par e-mail contre une session de recuperation."""
+    url = _base_url(project_url)
+    response = httpx.post(
+        f"{url}/auth/v1/verify",
+        headers=_auth_headers(publishable_key),
+        json={
+            "email": email.strip(),
+            "token": code.strip(),
+            "type": "recovery",
+        },
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        raise SupabaseSyncError(_error_detail(response))
+    payload = response.json()
+    user = payload.get("user") or {}
+    token = str(payload.get("access_token") or "")
+    user_id = str(user.get("id") or "")
+    if not token or not user_id:
+        raise SupabaseSyncError("Le code n'a pas ouvert de session de récupération.")
+    return SupabaseSession(
+        project_url=url,
+        publishable_key=publishable_key.strip(),
+        access_token=token,
+        user_id=user_id,
+        email=str(user.get("email") or email.strip()),
+        refresh_token=str(payload.get("refresh_token") or ""),
+        expires_at=int(payload.get("expires_at") or (time.time() + 3600)),
+    )
+
+
+def update_password(session: SupabaseSession, new_password: str) -> None:
+    """Remplace le mot de passe d'une session de recuperation authentifiee."""
+    response = httpx.put(
+        f"{session.project_url}/auth/v1/user",
+        headers=_auth_headers(session.publishable_key, session.access_token),
+        json={"password": new_password},
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        raise SupabaseSyncError(_error_detail(response))
+
+
 def refresh_session(session: SupabaseSession) -> SupabaseSession:
     """Renouvelle une session sans conserver ni redemander le mot de passe."""
     if not session.refresh_token:
