@@ -33,15 +33,16 @@ from cloud_store import insert_row, select_rows, update_rows, upsert_row
 from supabase_sync import (
     SupabaseSession,
     SupabaseSyncError,
+    recovery_session_from_token,
     refresh_session,
     request_password_reset,
     sign_in,
     update_password,
-    verify_recovery_code,
 )
 
 
 APP_TITLE = "Coach Glycémie"
+PASSWORD_RESET_REDIRECT_URL = "https://coach-glycemie-nicolas.streamlit.app/"
 DB_PATH = Path(__file__).with_name("coach_glycemie.db")
 SECRETS_DIR = Path(__file__).parent / ".streamlit"
 SECRETS_PATH = SECRETS_DIR / "secrets.toml"
@@ -685,6 +686,44 @@ st.set_page_config(
 )
 
 
+_RECOVERY_HASH_BRIDGE = st.components.v2.component(
+    "coach_password_recovery_hash_bridge",
+    html="""
+    <span aria-hidden="true" style="display:none"></span>
+    """,
+    js="""
+    export default function (component) {
+      const { setTriggerValue } = component
+      let hash = ""
+      try {
+        hash = window.top.location.hash || window.parent.location.hash || window.location.hash
+      } catch (_) {
+        hash = window.location.hash
+      }
+      if (!hash || !hash.includes("type=recovery")) return
+
+      const params = new URLSearchParams(hash.replace(/^#/, ""))
+      const accessToken = params.get("access_token") || ""
+      if (!accessToken) return
+
+      setTriggerValue("payload", {
+        access_token: accessToken,
+        refresh_token: params.get("refresh_token") || "",
+        expires_at: Number(params.get("expires_at") || 0),
+        type: params.get("type") || "",
+      })
+
+      try {
+        const cleanUrl = window.top.location.pathname + window.top.location.search
+        window.top.history.replaceState(null, "", cleanUrl)
+      } catch (_) {
+        window.history.replaceState(null, "", window.location.pathname + window.location.search)
+      }
+    }
+    """,
+)
+
+
 def configured_secret(name: str) -> str:
     """Lit un secret public de configuration sans exposer sa valeur."""
     try:
@@ -698,6 +737,36 @@ def active_cloud_session() -> SupabaseSession | None:
     return session if isinstance(session, SupabaseSession) else None
 
 
+def capture_password_recovery_session(
+    project_url: str,
+    publishable_key: str,
+) -> None:
+    """Recupere une seule fois le jeton place dans le fragment du lien Supabase."""
+    result = _RECOVERY_HASH_BRIDGE(
+        key="password_recovery_hash_bridge",
+        on_payload_change=lambda: None,
+    )
+    payload = getattr(result, "payload", None)
+    if not isinstance(payload, dict) or payload.get("type") != "recovery":
+        return
+    try:
+        recovery_session = recovery_session_from_token(
+            project_url,
+            publishable_key,
+            str(payload.get("access_token") or ""),
+            str(payload.get("refresh_token") or ""),
+            int(payload.get("expires_at") or 0),
+        )
+    except (TypeError, ValueError, SupabaseSyncError) as error:
+        st.session_state["password_recovery_error"] = str(error)
+        st.session_state["cloud_auth_view"] = "reset"
+    else:
+        st.session_state["password_recovery_session"] = recovery_session
+        st.session_state["password_reset_email"] = recovery_session.email
+        st.session_state["cloud_auth_view"] = "reset_link"
+    st.rerun()
+
+
 def require_cloud_login() -> SupabaseSession:
     """Bloque le journal tant que l'identité Supabase n'est pas établie."""
     project_url = configured_secret("SUPABASE_URL")
@@ -708,6 +777,8 @@ def require_cloud_login() -> SupabaseSession:
             "Lancez d'abord « Configurer le cloud » sur le Mac."
         )
         st.stop()
+
+    capture_password_recovery_session(project_url, publishable_key)
 
     session = active_cloud_session()
     if session is not None and session.expires_at:
@@ -733,12 +804,75 @@ def require_cloud_login() -> SupabaseSession:
     )
     st.session_state.setdefault("cloud_auth_view", "login")
     with st.container(border=True):
-        if st.session_state["cloud_auth_view"] == "reset":
+        if st.session_state["cloud_auth_view"] == "reset_link":
+            st.subheader("Choisir mon nouveau mot de passe")
+            st.caption(
+                "Votre lien sécurisé a été vérifié. Choisissez maintenant un "
+                "nouveau mot de passe."
+            )
+            with st.form("password_reset_confirm_form", clear_on_submit=False):
+                new_password = st.text_input(
+                    "Nouveau mot de passe",
+                    type="password",
+                    autocomplete="new-password",
+                )
+                confirm_password = st.text_input(
+                    "Confirmer le nouveau mot de passe",
+                    type="password",
+                    autocomplete="new-password",
+                )
+                reset_confirmed = st.form_submit_button(
+                    "Changer mon mot de passe",
+                    type="primary",
+                    icon=":material/lock_reset:",
+                    width="stretch",
+                )
+            if reset_confirmed:
+                recovery_session = st.session_state.get("password_recovery_session")
+                if not isinstance(recovery_session, SupabaseSession):
+                    st.error(
+                        "Le lien a expiré. Revenez à la connexion et demandez-en un nouveau."
+                    )
+                elif len(new_password) < 8:
+                    st.warning(
+                        "Choisissez un mot de passe d'au moins huit caractères."
+                    )
+                elif new_password != confirm_password:
+                    st.warning("Les deux mots de passe ne correspondent pas.")
+                else:
+                    try:
+                        update_password(recovery_session, new_password)
+                        st.session_state["supabase_session"] = recovery_session
+                        st.session_state["cloud_login_email"] = recovery_session.email
+                        st.session_state.pop("password_recovery_session", None)
+                        st.session_state.pop("password_recovery_error", None)
+                        st.session_state["cloud_auth_view"] = "login"
+                        st.rerun()
+                    except SupabaseSyncError as error:
+                        st.error(
+                            "Le lien est invalide ou expiré. Demandez-en un nouveau. "
+                            f"Détail : {error}"
+                        )
+            if st.button(
+                "Demander un nouveau lien",
+                icon=":material/refresh:",
+                width="stretch",
+                key="request_another_password_link",
+            ):
+                st.session_state.pop("password_recovery_session", None)
+                st.session_state["cloud_auth_view"] = "reset"
+                st.rerun()
+        elif st.session_state["cloud_auth_view"] == "reset":
             st.subheader("Réinitialiser mon mot de passe")
             st.caption(
-                "Recevez un code à six chiffres par e-mail, puis choisissez "
-                "un nouveau mot de passe."
+                "Recevez un lien sécurisé par e-mail. En l'ouvrant, vous "
+                "reviendrez ici pour choisir un nouveau mot de passe."
             )
+            if reset_error := st.session_state.pop("password_recovery_error", ""):
+                st.error(
+                    "Le lien est invalide ou expiré. Demandez-en un nouveau. "
+                    f"Détail : {reset_error}"
+                )
             with st.form("password_reset_request_form", clear_on_submit=False):
                 reset_email = st.text_input(
                     "Adresse e-mail du Coach",
@@ -752,7 +886,7 @@ def require_cloud_login() -> SupabaseSession:
                     key="password_reset_email_input",
                 ).strip()
                 reset_requested = st.form_submit_button(
-                    "Recevoir mon code",
+                    "Recevoir le lien sécurisé",
                     type="primary",
                     icon=":material/mail:",
                     width="stretch",
@@ -766,70 +900,17 @@ def require_cloud_login() -> SupabaseSession:
                             project_url,
                             publishable_key,
                             reset_email,
+                            PASSWORD_RESET_REDIRECT_URL,
                         )
                         st.session_state["password_reset_email"] = reset_email
                         st.session_state["password_reset_requested"] = True
                         st.success(
                             "Si cette adresse correspond au Coach, un e-mail "
-                            "contenant le code vient d'être envoyé."
+                            "contenant le lien vient d'être envoyé. Ouvrez-le "
+                            "sur cet appareil pour revenir ici."
                         )
                     except (ValueError, SupabaseSyncError) as error:
                         st.error(f"Envoi impossible : {error}")
-
-            if st.session_state.get("password_reset_requested"):
-                st.divider()
-                with st.form("password_reset_confirm_form", clear_on_submit=False):
-                    recovery_code = st.text_input(
-                        "Code à six chiffres",
-                        max_chars=6,
-                        autocomplete="one-time-code",
-                    ).strip()
-                    new_password = st.text_input(
-                        "Nouveau mot de passe",
-                        type="password",
-                        autocomplete="new-password",
-                    )
-                    confirm_password = st.text_input(
-                        "Confirmer le nouveau mot de passe",
-                        type="password",
-                        autocomplete="new-password",
-                    )
-                    reset_confirmed = st.form_submit_button(
-                        "Changer mon mot de passe",
-                        type="primary",
-                        icon=":material/lock_reset:",
-                        width="stretch",
-                    )
-                if reset_confirmed:
-                    if not re.fullmatch(r"\d{6}", recovery_code):
-                        st.warning("Le code doit contenir exactement six chiffres.")
-                    elif len(new_password) < 8:
-                        st.warning(
-                            "Choisissez un mot de passe d'au moins huit caractères."
-                        )
-                    elif new_password != confirm_password:
-                        st.warning("Les deux mots de passe ne correspondent pas.")
-                    else:
-                        try:
-                            recovery_session = verify_recovery_code(
-                                project_url,
-                                publishable_key,
-                                str(st.session_state["password_reset_email"]),
-                                recovery_code,
-                            )
-                            update_password(recovery_session, new_password)
-                            st.session_state["supabase_session"] = recovery_session
-                            st.session_state["cloud_login_email"] = (
-                                recovery_session.email
-                            )
-                            st.session_state.pop("password_reset_requested", None)
-                            st.session_state["cloud_auth_view"] = "login"
-                            st.rerun()
-                        except (ValueError, SupabaseSyncError) as error:
-                            st.error(
-                                "Le code est invalide ou expiré. Demandez un "
-                                f"nouveau code puis réessayez. Détail : {error}"
-                            )
 
             if st.button(
                 "Retour à la connexion",

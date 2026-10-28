@@ -137,53 +137,50 @@ def request_password_reset(
     project_url: str,
     publishable_key: str,
     email: str,
+    redirect_to: str,
 ) -> None:
-    """Demande l'envoi d'un code de recuperation sans reveler le compte."""
+    """Demande un lien de recuperation sans reveler l'existence du compte."""
     url = _base_url(project_url)
     response = httpx.post(
         f"{url}/auth/v1/recover",
         headers=_auth_headers(publishable_key),
         json={"email": email.strip()},
+        params={"redirect_to": redirect_to.strip()},
         timeout=20,
     )
     if response.status_code >= 400:
         raise SupabaseSyncError(_error_detail(response))
 
 
-def verify_recovery_code(
+def recovery_session_from_token(
     project_url: str,
     publishable_key: str,
-    email: str,
-    code: str,
+    access_token: str,
+    refresh_token: str = "",
+    expires_at: int = 0,
 ) -> SupabaseSession:
-    """Echange le code recu par e-mail contre une session de recuperation."""
+    """Valide le jeton du lien Supabase et construit la session de recuperation."""
     url = _base_url(project_url)
-    response = httpx.post(
-        f"{url}/auth/v1/verify",
-        headers=_auth_headers(publishable_key),
-        json={
-            "email": email.strip(),
-            "token": code.strip(),
-            "type": "recovery",
-        },
+    token = access_token.strip()
+    response = httpx.get(
+        f"{url}/auth/v1/user",
+        headers=_auth_headers(publishable_key, token),
         timeout=20,
     )
     if response.status_code >= 400:
         raise SupabaseSyncError(_error_detail(response))
-    payload = response.json()
-    user = payload.get("user") or {}
-    token = str(payload.get("access_token") or "")
+    user = response.json()
     user_id = str(user.get("id") or "")
     if not token or not user_id:
-        raise SupabaseSyncError("Le code n'a pas ouvert de session de récupération.")
+        raise SupabaseSyncError("Le lien n'a pas ouvert de session de récupération.")
     return SupabaseSession(
         project_url=url,
         publishable_key=publishable_key.strip(),
         access_token=token,
         user_id=user_id,
-        email=str(user.get("email") or email.strip()),
-        refresh_token=str(payload.get("refresh_token") or ""),
-        expires_at=int(payload.get("expires_at") or (time.time() + 3600)),
+        email=str(user.get("email") or ""),
+        refresh_token=refresh_token.strip(),
+        expires_at=int(expires_at or (time.time() + 3600)),
     )
 
 
