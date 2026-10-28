@@ -4794,6 +4794,123 @@ def inject_styles() -> None:
           background:white; padding:1rem 1.1rem; border-radius:15px;
           border:1px solid rgba(22,58,37,.09); margin:.45rem 0;
         }
+
+        /* Navigation tactile : les onglets restent sur une seule ligne et
+           défilent horizontalement au lieu d'être comprimés. */
+        .st-key-main_navigation > [data-baseweb="tab-list"],
+        .st-key-journal_navigation > [data-baseweb="tab-list"],
+        .st-key-assistant_navigation > [data-baseweb="tab-list"] {
+          overflow-x:auto;
+          overflow-y:hidden;
+          scrollbar-width:none;
+          -webkit-overflow-scrolling:touch;
+          overscroll-behavior-inline:contain;
+        }
+        .st-key-main_navigation > [data-baseweb="tab-list"]::-webkit-scrollbar,
+        .st-key-journal_navigation > [data-baseweb="tab-list"]::-webkit-scrollbar,
+        .st-key-assistant_navigation > [data-baseweb="tab-list"]::-webkit-scrollbar {
+          display:none;
+        }
+        .st-key-main_navigation > [data-baseweb="tab-list"] button,
+        .st-key-journal_navigation > [data-baseweb="tab-list"] button,
+        .st-key-assistant_navigation > [data-baseweb="tab-list"] button {
+          min-height:44px;
+          flex:0 0 auto;
+          white-space:nowrap;
+        }
+
+        @media (max-width: 640px) {
+          html { -webkit-text-size-adjust:100%; }
+          .block-container {
+            max-width:100%;
+            padding-top:.45rem;
+            padding-left:.75rem;
+            padding-right:.75rem;
+            padding-bottom:max(1.25rem, env(safe-area-inset-bottom));
+          }
+          .hero {
+            padding:.72rem .85rem;
+            margin-bottom:.35rem;
+            border-radius:14px;
+            box-shadow:0 6px 18px rgba(22,58,37,.05);
+          }
+          .hero h1 { font-size:1.55rem; line-height:1.15; }
+          .hero p { font-size:.88rem; line-height:1.35; }
+          h1 { font-size:1.75rem !important; line-height:1.2 !important; }
+          h2 { font-size:1.42rem !important; line-height:1.25 !important; }
+          h3 { font-size:1.16rem !important; line-height:1.3 !important; }
+
+          /* Navigation principale accessible pendant le défilement. */
+          .st-key-main_navigation > [data-baseweb="tab-list"] {
+            position:sticky;
+            top:2.8rem;
+            z-index:90;
+            margin:0 -.75rem .35rem;
+            padding:0 .65rem;
+            background:rgba(248,250,247,.97);
+            backdrop-filter:blur(10px);
+            -webkit-backdrop-filter:blur(10px);
+            border-bottom:1px solid rgba(22,58,37,.10);
+          }
+          .st-key-main_navigation > [data-baseweb="tab-list"] button {
+            min-height:48px;
+            padding-left:.72rem;
+            padding-right:.72rem;
+            font-size:.9rem;
+          }
+          .st-key-journal_navigation > [data-baseweb="tab-list"],
+          .st-key-assistant_navigation > [data-baseweb="tab-list"] {
+            margin-bottom:.25rem;
+          }
+          .st-key-journal_navigation > [data-baseweb="tab-list"] button,
+          .st-key-assistant_navigation > [data-baseweb="tab-list"] button {
+            padding-left:.65rem;
+            padding-right:.65rem;
+            font-size:.87rem;
+          }
+
+          /* Cibles tactiles et saisie sans zoom automatique d'iOS. */
+          div[data-testid="stButton"] button,
+          div[data-testid="stFormSubmitButton"] button,
+          div[data-testid="stDownloadButton"] button {
+            min-height:44px;
+          }
+          input, textarea, select { font-size:16px !important; }
+          textarea { min-height:112px; }
+          div[data-testid="stForm"] {
+            padding:.75rem;
+            border-radius:14px;
+          }
+          div[data-testid="stMetric"] {
+            padding:.68rem .78rem;
+            border-radius:13px;
+            min-height:auto;
+          }
+          div[data-testid="stMetricLabel"] {
+            white-space:normal;
+            overflow:visible;
+          }
+          div[data-testid="stMetricValue"] {
+            font-size:1.55rem;
+            line-height:1.2;
+            overflow-wrap:anywhere;
+          }
+          .small-card {
+            padding:.82rem .88rem;
+            border-radius:13px;
+          }
+          div[data-testid="stDataFrame"],
+          div[data-testid="stTable"] {
+            max-width:100%;
+            overflow-x:auto;
+            -webkit-overflow-scrolling:touch;
+          }
+          div[data-testid="stAlert"] { padding:.75rem .8rem; }
+          section[data-testid="stSidebar"] {
+            width:min(92vw, 360px) !important;
+            padding-bottom:env(safe-area-inset-bottom);
+          }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -5073,26 +5190,29 @@ with st.sidebar:
 meal_tab, journal_hub, coach_tab, assistant_hub = st.tabs(
     [
         ":material/edit_note: Aujourd'hui",
-        ":material/menu_book: Mon journal",
-        ":material/monitoring: Ma progression",
-        ":material/chat: Nutritionniste IA",
-    ]
+        ":material/menu_book: Journal",
+        ":material/monitoring: Progression",
+        ":material/chat: Coach IA",
+    ],
+    key="main_navigation",
 )
 with journal_hub:
     history_tab, symptom_tab, bowel_tab, activity_tab = st.tabs(
         [
             ":material/restaurant: Repas",
-            ":material/ecg_heart: Faim & douleurs",
+            ":material/ecg_heart: Symptômes",
             ":material/gastroenterology: Digestion",
             ":material/directions_run: Activité",
-        ]
+        ],
+        key="journal_navigation",
     )
 with assistant_hub:
     assistant_tab, food_tab = st.tabs(
         [
-            ":material/chat: Échanger",
-            ":material/grocery: Mes aliments",
-        ]
+            ":material/chat: Discussion",
+            ":material/grocery: Aliments",
+        ],
+        key="assistant_navigation",
     )
 active_profile = load_profile()
 active_eating_window_hours = normalized_eating_window_hours(
