@@ -4794,6 +4794,10 @@ def inject_styles() -> None:
           background:white; padding:1rem 1.1rem; border-radius:15px;
           border:1px solid rgba(22,58,37,.09); margin:.45rem 0;
         }
+        .st-key-main_navigation_mobile { position:sticky; top:2.7rem; z-index:90;
+          background:rgba(248,250,247,.97); padding:.35rem 0;
+          backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+        .st-key-main_navigation_mobile button { min-height:46px; }
 
         /* Navigation tactile : les onglets restent sur une seule ligne et
            défilent horizontalement au lieu d'être comprimés. */
@@ -4836,6 +4840,13 @@ def inject_styles() -> None:
           }
           .hero h1 { font-size:1.55rem; line-height:1.15; }
           .hero p { font-size:.88rem; line-height:1.35; }
+          .st-key-main_navigation_mobile { margin:0 -.75rem .55rem;
+            padding:.35rem .75rem; }
+          .st-key-main_navigation_mobile button { min-height:48px;
+            padding-left:.5rem; padding-right:.5rem; font-size:.84rem; }
+          .st-key-journal_navigation_mobile button,
+          .st-key-assistant_navigation_mobile button { min-height:44px;
+            font-size:.82rem; }
           h1 { font-size:1.75rem !important; line-height:1.2 !important; }
           h2 { font-size:1.42rem !important; line-height:1.25 !important; }
           h3 { font-size:1.16rem !important; line-height:1.3 !important; }
@@ -5187,32 +5198,35 @@ with st.sidebar:
         "(https://medlineplus.gov/abdominalpain.html)"
     )
 
-meal_tab, journal_hub, coach_tab, assistant_hub = st.tabs(
-    [
-        ":material/edit_note: Aujourd'hui",
-        ":material/menu_book: Journal",
-        ":material/monitoring: Progression",
-        ":material/chat: Coach IA",
-    ],
-    key="main_navigation",
+main_section = st.segmented_control(
+    "Navigation principale",
+    ["Aujourd'hui", "Journal", "Progrès", "Coach"],
+    default="Aujourd'hui",
+    key="main_navigation_mobile",
+    label_visibility="collapsed",
+    width="stretch",
+    wrap=False,
 )
-with journal_hub:
-    history_tab, symptom_tab, bowel_tab, activity_tab = st.tabs(
-        [
-            ":material/restaurant: Repas",
-            ":material/ecg_heart: Symptômes",
-            ":material/gastroenterology: Digestion",
-            ":material/directions_run: Activité",
-        ],
-        key="journal_navigation",
+journal_section = None
+assistant_section = None
+if main_section == "Journal":
+    journal_section = st.segmented_control(
+        "Dans le journal",
+        ["Repas", "Faim et douleurs", "Digestion", "Activité"],
+        default="Repas",
+        key="journal_navigation_mobile",
+        label_visibility="collapsed",
+        width="stretch",
+        wrap=False,
     )
-with assistant_hub:
-    assistant_tab, food_tab = st.tabs(
-        [
-            ":material/chat: Discussion",
-            ":material/grocery: Aliments",
-        ],
-        key="assistant_navigation",
+elif main_section == "Coach":
+    assistant_section = st.segmented_control(
+        "Dans le coach",
+        ["Discussion", "Mes aliments"],
+        default="Discussion",
+        key="assistant_navigation_mobile",
+        label_visibility="collapsed",
+        width="stretch",
     )
 active_profile = load_profile()
 active_eating_window_hours = normalized_eating_window_hours(
@@ -5222,7 +5236,7 @@ active_window_label = eating_window_details(
     active_profile["eating_window_start"], active_eating_window_hours
 )[0]
 
-with meal_tab:
+if main_section == "Aujourd'hui":
     favorite_foods = load_favorite_foods()
     favorite_food_by_id = {int(food["id"]): food for food in favorite_foods}
     today_value = date.today()
@@ -5268,12 +5282,31 @@ with meal_tab:
     energy_meta = DAILY_STATUS_META[energy_status]
     daily_meta = DAILY_STATUS_META[daily_status]
 
-    with st.container(horizontal=True, horizontal_alignment="distribute"):
-        st.subheader("Votre journée en un coup d'œil")
-        with st.popover(
-            "Comprendre le score",
-            icon=":material/info:",
-        ):
+    st.caption(f"{today_value:%d/%m/%Y} · Fenêtre alimentaire {active_window_label}")
+    st.markdown(
+        f"### {daily_meta['emoji']} {daily_meta['label']}"
+    )
+    st.caption(
+        f"{len(today_meals)} repas notés · {today_calories:.0f} / "
+        f"{calorie_target:.0f} kcal estimées"
+    )
+    with st.expander("Comprendre ma journée", icon=":material/monitoring:"):
+        st.metric(
+            "Profil glycémique estimé",
+            f"{glycemic_meta['emoji']} {today_score:.1f}/10"
+            if today_score is not None else "🔵 —",
+        )
+        st.metric(
+            "Énergie vs repère quotidien",
+            f"{energy_meta['emoji']} {today_calories:.0f} / {calorie_target:.0f} kcal",
+            delta=f"{calorie_ratio * 100:.0f} % du repère",
+            delta_color="off",
+        )
+        st.caption(
+            f"Activité enregistrée : {today_activity:.0f} kcal estimées. "
+            "Observez la tendance sur plusieurs jours."
+        )
+        with st.expander("Comment est calculé le score ?"):
             st.markdown(
                 """
 **Deux axes sont volontairement séparés.**
@@ -5290,39 +5323,11 @@ cible calorique inclut déjà votre niveau d'activité habituel : les calories d
 sport sont affichées séparément pour éviter de compter deux fois la dépense.
                 """
             )
-    summary_columns = st.columns(3)
-    summary_columns[0].metric(
-        "Profil glycémique estimé",
-        (
-            f"{glycemic_meta['emoji']} {today_score:.1f}/10"
-            if today_score is not None
-            else "🔵 —"
-        ),
-    )
-    summary_columns[1].metric(
-        "Énergie vs cible",
-        f"{energy_meta['emoji']} {today_calories:.0f} / {calorie_target:.0f} kcal",
-        delta=f"{calorie_ratio * 100:.0f} % de la cible",
-        delta_color="off",
-    )
-    summary_columns[2].metric(
-        "Cap du jour",
-        f"{daily_meta['emoji']} {daily_meta['label']}",
-    )
-    st.caption(
-        f"{len(today_meals)} repas notés · activité enregistrée : "
-        f"{today_activity:.0f} kcal estimées. Votre priorité : observer la "
-        "tendance sur plusieurs jours, pas corriger brutalement une seule journée."
-    )
-
     left = st.container()
     with left:
-        st.subheader("Que souhaitez-vous noter ?")
+        st.subheader("Noter maintenant")
         st.caption(
-            "Décrivez librement un repas, une faim ou un inconfort digestif, avec "
-            "le jour et l'heure. Vous pouvez aussi signaler les deux dans la même "
-            "phrase. Votre fenêtre actuelle est "
-            f"**{active_window_label}** ({eating_window_pattern(active_eating_window_hours)})."
+            "Repas, faim ou inconfort : écrivez naturellement, avec l'heure si vous la connaissez."
         )
         if st.session_state.pop("clear_meal_form", False):
             st.session_state["meal_text_input"] = ""
@@ -5342,32 +5347,34 @@ sport sont affichées séparément pour éviter de compter deux fois la dépense
                 label_visibility="collapsed",
                 key="meal_text_input",
             )
-            product_query = st.text_input(
-                "Produit ou marque à vérifier (facultatif)",
-                placeholder="Ex. : Yogurísimo La Serenísima ou le code-barres",
-                help=(
-                    "Pour un produit emballé, indiquez son nom exact, sa marque ou "
-                    "son code-barres. La recherche est limitée aux produits vendus "
-                    "en Argentine."
-                ),
-                key="product_query_input",
-            )
-            if favorite_foods:
-                selected_food_ids = st.multiselect(
-                    "Aliments de ma bibliothèque utilisés dans ce repas",
-                    options=list(favorite_food_by_id),
-                    format_func=lambda food_id: favorite_food_label(
-                        favorite_food_by_id[int(food_id)]
-                    ),
+            with st.expander("Préciser un produit ou un aliment favori"):
+                product_query = st.text_input(
+                    "Produit ou marque à vérifier (facultatif)",
+                    placeholder="Ex. : Yogurísimo La Serenísima ou le code-barres",
                     help=(
-                        "L'application essaie aussi de les reconnaître dans votre "
-                        "texte. Sélectionnez-les ici si vous voulez lever toute "
-                        "ambiguïté."
+                        "Pour un produit emballé, indiquez son nom exact, sa marque ou "
+                        "son code-barres. La recherche est limitée aux produits vendus "
+                        "en Argentine."
                     ),
-                    key="meal_favorite_foods",
+                    key="product_query_input",
                 )
+                if favorite_foods:
+                    selected_food_ids = st.multiselect(
+                        "Aliments de ma bibliothèque utilisés dans ce repas",
+                        options=list(favorite_food_by_id),
+                        format_func=lambda food_id: favorite_food_label(
+                            favorite_food_by_id[int(food_id)]
+                        ),
+                        help=(
+                            "L'application essaie aussi de les reconnaître dans votre "
+                            "texte. Sélectionnez-les ici si vous voulez lever toute "
+                            "ambiguïté."
+                        ),
+                        key="meal_favorite_foods",
+                    )
             analyze_clicked = st.form_submit_button(
-                "✨ Interpréter et enregistrer", type="primary", width="stretch"
+                "Enregistrer mon récit", type="primary", width="stretch",
+                icon=":material/add_circle:",
             )
 
         if analyze_clicked:
@@ -5541,7 +5548,7 @@ sport sont affichées séparément pour éviter de compter deux fois la dépense
                         "code-barres ou faites lire le texte de l'étiquette."
                     )
 
-with history_tab:
+if main_section == "Journal" and journal_section == "Repas":
     meals = load_meals()
     st.subheader("Votre journal alimentaire")
     st.caption(
@@ -5576,7 +5583,7 @@ with history_tab:
             render_meal_history_card(meal)
 
 
-with symptom_tab:
+if main_section == "Journal" and journal_section == "Faim et douleurs":
     meals = load_meals()
     symptom_events = load_symptom_events()
     st.subheader("Journal de faim et douleurs abdominales")
@@ -5799,7 +5806,7 @@ with symptom_tab:
         st.info("Aucune sensation de faim ou douleur enregistrée pour le moment.")
 
 
-with bowel_tab:
+if main_section == "Journal" and journal_section == "Digestion":
     bowel_events = load_bowel_events()
     st.subheader("Journal des selles")
     st.caption(
@@ -5999,7 +6006,7 @@ with bowel_tab:
         st.info("Aucun passage enregistré pour le moment.")
 
 
-with activity_tab:
+if main_section == "Journal" and journal_section == "Activité":
     activity_events = load_activity_events()
     activity_profile = load_profile()
     activity_weights = load_weights()
@@ -6233,7 +6240,7 @@ with activity_tab:
         )
 
 
-with food_tab:
+if main_section == "Coach" and assistant_section == "Mes aliments":
     favorite_foods = load_favorite_foods()
     food_by_id = {int(food["id"]): food for food in favorite_foods}
     st.subheader("Ma bibliothèque d'aliments")
@@ -6609,7 +6616,7 @@ with food_tab:
         )
 
 
-with assistant_tab:
+if main_section == "Coach" and assistant_section == "Discussion":
     st.subheader("Échanger avec votre nutritionniste IA")
     st.caption(
         "Posez une question sur vos repas, vos aliments récurrents, vos activités, "
@@ -6775,7 +6782,7 @@ with assistant_tab:
                         )
 
 
-with coach_tab:
+if main_section == "Progrès":
     meals = load_meals()
     weights = load_weights()
     symptom_events = load_symptom_events()
@@ -6822,8 +6829,15 @@ with coach_tab:
         target_weight_value,
     )
 
-    with st.container(border=True):
-        st.markdown("#### Votre stratégie à long terme")
+    st.markdown(
+        f"### {latest_weight_kg:.1f} kg → {target_weight_value:.1f} kg"
+    )
+    st.caption(
+        f"{strategy_targets['plan_phase']} · repère quotidien "
+        f"{strategy_targets['estimated_energy_kcal']} kcal · "
+        "une progression durable, sans régime keto."
+    )
+    with st.expander("Comprendre ma stratégie", icon=":material/target:"):
         strategy_columns = st.columns(4)
         short_phase = {
             "Perte progressive": "Perte",
@@ -6857,7 +6871,7 @@ with coach_tab:
             "avec la courbe réelle du poids)."
         )
 
-    profile_col, weight_col = st.columns([0.9, 1.1], gap="large")
+    weight_col, profile_col = st.columns([1.1, 0.9], gap="large")
     with profile_col:
         st.subheader("Votre profil")
         current_index = (
