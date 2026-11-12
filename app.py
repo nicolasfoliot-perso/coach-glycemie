@@ -5259,21 +5259,32 @@ with st.sidebar:
         "(https://medlineplus.gov/abdominalpain.html)"
     )
 
-main_section = st.segmented_control(
-    "Navigation principale",
-    ["Aujourd'hui", "Journal", "Progrès", "Coach"],
-    default="Aujourd'hui",
-    key="main_navigation_mobile",
-    label_visibility="collapsed",
-    width="stretch",
-    wrap=False,
-)
+st.session_state.setdefault("main_screen", "Accueil")
+main_section = st.session_state["main_screen"]
+if main_section == "Accueil":
+    st.subheader("Où souhaitez-vous aller ?")
+    for label, destination, icon in (
+        ("Saisir un repas", "Saisir un repas", ":material/edit_note:"),
+        ("Mon journal", "Journal", ":material/menu_book:"),
+        ("Mon poids et mes progrès", "Progrès", ":material/monitoring:"),
+        ("Mon profil", "Profil", ":material/person:"),
+        ("Parler au coach", "Coach", ":material/chat:"),
+    ):
+        if st.button(label, key=f"home_{destination}", icon=icon, width="stretch"):
+            st.session_state["main_screen"] = destination
+            st.rerun()
+else:
+    if st.button("Accueil", icon=":material/arrow_back:", key="back_home"):
+        st.session_state["main_screen"] = "Accueil"
+        st.rerun()
 journal_section = None
 assistant_section = None
 if main_section == "Journal":
+    if st.session_state.get("journal_navigation_mobile") == "Activité":
+        st.session_state["journal_navigation_mobile"] = "Repas"
     journal_section = st.segmented_control(
         "Dans le journal",
-        ["Repas", "Faim et douleurs", "Digestion", "Activité"],
+        ["Repas", "Faim et douleurs", "Digestion"],
         default="Repas",
         key="journal_navigation_mobile",
         label_visibility="collapsed",
@@ -5281,14 +5292,7 @@ if main_section == "Journal":
         wrap=False,
     )
 elif main_section == "Coach":
-    assistant_section = st.segmented_control(
-        "Dans le coach",
-        ["Discussion", "Mes aliments"],
-        default="Discussion",
-        key="assistant_navigation_mobile",
-        label_visibility="collapsed",
-        width="stretch",
-    )
+    assistant_section = "Discussion"
 active_profile = load_profile()
 active_eating_window_hours = normalized_eating_window_hours(
     active_profile.get("eating_window_hours", DEFAULT_EATING_WINDOW_HOURS)
@@ -5297,27 +5301,7 @@ active_window_label = eating_window_details(
     active_profile["eating_window_start"], active_eating_window_hours
 )[0]
 
-if main_section == "Aujourd'hui":
-    quick_row = st.columns(2, gap="small", wrap=False)
-    quick_row[0].button(
-        "Mon journal", icon=":material/menu_book:", width="stretch",
-        on_click=lambda: st.session_state.update(main_navigation_mobile="Journal"),
-    )
-    quick_row[1].button(
-        "Parler au coach", icon=":material/chat:", width="stretch",
-        on_click=lambda: st.session_state.update(main_navigation_mobile="Coach"),
-    )
-    quick_row = st.columns(2, gap="small", wrap=False)
-    quick_row[0].button(
-        "Mon poids", icon=":material/monitoring:", width="stretch",
-        on_click=lambda: st.session_state.update(main_navigation_mobile="Progrès"),
-    )
-    quick_row[1].button(
-        "Mes aliments", icon=":material/grocery:", width="stretch",
-        on_click=lambda: st.session_state.update(
-            main_navigation_mobile="Coach", assistant_navigation_mobile="Mes aliments"
-        ),
-    )
+if main_section == "Saisir un repas":
     favorite_foods = load_favorite_foods()
     favorite_food_by_id = {int(food["id"]): food for food in favorite_foods}
     today_value = date.today()
@@ -5670,9 +5654,8 @@ sport sont affichées séparément pour éviter de compter deux fois la dépense
                     st.info(
                         f"Aucune fiche suffisamment proche de « {last_query} » n'a "
                         "été trouvée en Argentine. L'analyse reste qualitative. "
-                        "Pour fiabiliser les prochains calculs, ouvrez "
-                        "Nutritionniste IA → Mes aliments, puis recherchez le "
-                        "code-barres ou faites lire le texte de l'étiquette."
+                        "Pour fiabiliser les prochains calculs, indiquez les "
+                        "valeurs de l'étiquette dans votre prochaine saisie."
                     )
 
 if main_section == "Journal" and journal_section == "Repas":
@@ -5686,12 +5669,10 @@ if main_section == "Journal" and journal_section == "Repas":
     if not meals:
         st.info("Aucun repas enregistré pour le moment. Votre première analyse apparaîtra ici.")
     else:
-        average = sum(meal["score"] for meal in meals) / len(meals)
         green_share = 100 * sum(meal["color"] == "vert" for meal in meals) / len(meals)
-        metric_1, metric_2, metric_3 = st.columns(3)
+        metric_1, metric_2 = st.columns(2)
         metric_1.metric("Repas analysés", len(meals))
-        metric_2.metric("Note moyenne", f"{average:.1f}/10")
-        metric_3.metric("Repas au profil favorable", f"{green_share:.0f}%")
+        metric_2.metric("Repas au profil favorable", f"{green_share:.0f}%")
 
         history_scope = st.segmented_control(
             "Repas affichés",
@@ -6744,21 +6725,7 @@ if main_section == "Coach" and assistant_section == "Mes aliments":
 
 
 if main_section == "Coach" and assistant_section == "Discussion":
-    st.subheader("Échanger avec votre nutritionniste IA")
-    st.caption(
-        "Posez une question sur vos repas, vos aliments récurrents, vos activités, "
-        "votre poids ou vos tendances récentes. L'assistant adopte la méthode "
-        "d'un nutritionniste : il analyse les portions, l'équilibre des repas, la "
-        "satiété, la dépense estimée et la progression dans le temps. Il utilise "
-        "le profil et une sélection limitée du journal pour contextualiser sa réponse."
-    )
-    st.info(
-        "Cet assistant IA adopte une approche de nutritionniste, mais n'est pas "
-        "un professionnel diplômé. Ses réponses sont éducatives, reposent sur "
-        "des estimations et ne remplacent pas un suivi diététique ou médical "
-        "personnalisé.",
-        icon=":material/health_and_safety:",
-    )
+    st.subheader("Parler au coach")
 
     st.session_state.setdefault("coach_chat_messages", [])
     chat_messages: list[dict[str, Any]] = st.session_state[
@@ -6776,43 +6743,6 @@ if main_section == "Coach" and assistant_section == "Discussion":
         ):
             st.session_state["coach_chat_messages"] = []
             st.rerun()
-
-    suggested_questions = {
-        "Bilan récent": (
-            "Analyse mes repas des sept derniers jours comme le ferait un "
-            "nutritionniste et indique-moi les deux priorités principales."
-        ),
-        "Objectifs": (
-            "Mes portions et l'équilibre de mes repas semblent-ils cohérents "
-            "avec mon objectif de perte de poids progressive ?"
-        ),
-        "Prochaine étape": (
-            "Quel ajustement nutritionnel simple et réaliste puis-je tester "
-            "cette semaine ?"
-        ),
-        "Sport & énergie": (
-            "Mets en relation mes activités récentes, mes apports consignés, ma "
-            "faim et mon objectif, sans compter deux fois la dépense sportive."
-        ),
-    }
-    suggested_question: str | None = None
-    if not chat_messages:
-        with st.container(border=True):
-            st.markdown(
-                "**Vous pouvez demander, par exemple :** une lecture de la "
-                "semaine, une explication d'un écart ou une idée simple pour le "
-                "prochain repas. Décrivez ce qui compte pour vous aujourd'hui."
-            )
-        if ai_settings.has_any_key:
-            selected_suggestion = st.pills(
-                "Questions proposées",
-                list(suggested_questions),
-                selection_mode="single",
-                label_visibility="collapsed",
-                key="coach_chat_suggestions",
-            )
-            if selected_suggestion:
-                suggested_question = suggested_questions[selected_suggestion]
 
     conversation_view = (
         st.container(height=520, border=True)
@@ -6851,7 +6781,7 @@ if main_section == "Coach" and assistant_section == "Discussion":
         disabled=not ai_settings.has_any_key,
         submit_mode="disable",
     )
-    submitted_question = (question or suggested_question or "").strip()
+    submitted_question = (question or "").strip()
     if submitted_question:
         history_before_question = list(chat_messages)
         user_message = {"role": "user", "content": submitted_question}
@@ -6908,7 +6838,7 @@ if main_section == "Coach" and assistant_section == "Discussion":
                         )
 
 
-if main_section == "Progrès":
+if main_section in {"Progrès", "Profil"}:
     meals = load_meals()
     weights = load_weights()
     symptom_events = load_symptom_events()
@@ -6955,50 +6885,51 @@ if main_section == "Progrès":
         target_weight_value,
     )
 
-    st.markdown(
-        f"### {latest_weight_kg:.1f} kg → {target_weight_value:.1f} kg"
-    )
-    st.caption(
-        f"{strategy_targets['plan_phase']} · repère quotidien "
-        f"{strategy_targets['estimated_energy_kcal']} kcal · "
-        "une progression durable, sans régime keto."
-    )
-    with st.expander("Comprendre ma stratégie", icon=":material/target:"):
-        strategy_columns = st.columns(4)
-        short_phase = {
-            "Perte progressive": "Perte",
-            "Transition vers la stabilisation": "Transition",
-            "Stabilisation": "Maintien",
-            "Repère stable": "Maintien",
-            "Prise progressive": "Prise",
-        }.get(strategy_targets["plan_phase"], strategy_targets["plan_phase"])
-        strategy_columns[0].metric("Phase actuelle", short_phase)
-        strategy_columns[1].metric(
-            "Poids → cible", f"{latest_weight_kg:.1f} → {target_weight_value:.1f} kg"
-        )
-        strategy_columns[2].metric(
-            "Repère actuel",
-            f"{strategy_targets['estimated_energy_kcal']} kcal/j",
-            f"{strategy_targets['daily_adjustment_kcal']} kcal",
-        )
-        strategy_columns[3].metric(
-            "Glucides conservés",
-            f"{strategy_targets['carbs_g']:.0f} g/j",
-        )
-        strategy_columns[3].caption(
-            f"≈ {strategy_targets['carb_energy_share_pct']} % de l'énergie"
+    if main_section == "Progrès":
+        st.markdown(
+            f"### {latest_weight_kg:.1f} kg → {target_weight_value:.1f} kg"
         )
         st.caption(
-            "Plan équilibré non keto : la qualité et la portion des glucides "
-            "comptent davantage que leur suppression. Dans le dernier kilo, le "
-            "déficit calorique diminue progressivement ; à la cible, le repère "
-            f"passe automatiquement vers le maintien (environ "
-            f"{stabilization_targets['estimated_energy_kcal']} kcal/j, à calibrer "
-            "avec la courbe réelle du poids)."
+            f"{strategy_targets['plan_phase']} · repère quotidien "
+            f"{strategy_targets['estimated_energy_kcal']} kcal · "
+            "une progression durable, sans régime keto."
         )
+        with st.expander("Comprendre ma stratégie", icon=":material/target:"):
+            strategy_columns = st.columns(4)
+            short_phase = {
+                "Perte progressive": "Perte",
+                "Transition vers la stabilisation": "Transition",
+                "Stabilisation": "Maintien",
+                "Repère stable": "Maintien",
+                "Prise progressive": "Prise",
+            }.get(strategy_targets["plan_phase"], strategy_targets["plan_phase"])
+            strategy_columns[0].metric("Phase actuelle", short_phase)
+            strategy_columns[1].metric(
+                "Poids → cible", f"{latest_weight_kg:.1f} → {target_weight_value:.1f} kg"
+            )
+            strategy_columns[2].metric(
+                "Repère actuel",
+                f"{strategy_targets['estimated_energy_kcal']} kcal/j",
+                f"{strategy_targets['daily_adjustment_kcal']} kcal",
+            )
+            strategy_columns[3].metric(
+                "Glucides conservés",
+                f"{strategy_targets['carbs_g']:.0f} g/j",
+            )
+            strategy_columns[3].caption(
+                f"≈ {strategy_targets['carb_energy_share_pct']} % de l'énergie"
+            )
+            st.caption(
+                "Plan équilibré non keto : la qualité et la portion des glucides "
+                "comptent davantage que leur suppression. Dans le dernier kilo, le "
+                "déficit calorique diminue progressivement ; à la cible, le repère "
+                f"passe automatiquement vers le maintien (environ "
+                f"{stabilization_targets['estimated_energy_kcal']} kcal/j, à calibrer "
+                "avec la courbe réelle du poids)."
+            )
 
-    weight_col, profile_col = st.columns([1.1, 0.9], gap="large")
-    with profile_col:
+    weight_col = st.container()
+    if main_section == "Profil":
         st.subheader("Votre profil")
         current_index = (
             OBJECTIVE_OPTIONS.index(profile["objective"])
@@ -7231,6 +7162,9 @@ if main_section == "Progrès":
             "(https://www.nationalacademies.org/read/10872/chapter/13)"
         )
 
+    if main_section == "Profil":
+        st.stop()
+
     with weight_col:
         st.subheader("Suivi du poids")
         with st.form("weight_form", clear_on_submit=False):
@@ -7290,74 +7224,23 @@ if main_section == "Progrès":
                 st.success("Mesure ajoutée.")
 
     st.divider()
-    score_chart_col, weight_chart_col = st.columns(2, gap="large")
-    with score_chart_col:
-        st.subheader("Évolution des notes moyennes")
-        if not meals:
-            st.info("Le graphique apparaîtra après votre première analyse.")
-        else:
-            score_frame = pd.DataFrame(meals)
-            score_frame["Jour"] = [
-                (
-                    meal_occurred_at(meal).astimezone(LOCAL_TIMEZONE).date()
-                    if meal_occurred_at(meal) is not None
-                    else None
-                )
-                for meal in meals
-            ]
-            score_frame = score_frame.dropna(subset=["Jour"])
-            daily_scores = (
-                score_frame.groupby("Jour", as_index=False)["score"]
-                .mean()
-                .rename(columns={"score": "Note moyenne"})
+    st.subheader("Évolution du poids")
+    if not weights:
+        st.info("Ajoutez une première mesure pour afficher la courbe.")
+    else:
+        weight_frame = pd.DataFrame(weights)
+        weight_frame["Date"] = pd.to_datetime(weight_frame["measured_on"])
+        weight_chart = (
+            alt.Chart(weight_frame)
+            .mark_line(point=True, strokeWidth=3, color="#f97316")
+            .encode(
+                x=alt.X("Date:T", title="Date"),
+                y=alt.Y("weight_kg:Q", title="Poids (kg)", scale=alt.Scale(zero=False)),
+                tooltip=["Date:T", alt.Tooltip("weight_kg:Q", title="Poids", format=".1f")],
             )
-            daily_scores["Moyenne mobile"] = daily_scores["Note moyenne"].rolling(
-                window=7, min_periods=1
-            ).mean()
-            score_long = daily_scores.melt(
-                id_vars="Jour",
-                value_vars=["Note moyenne", "Moyenne mobile"],
-                var_name="Série",
-                value_name="Note",
-            )
-            score_chart = (
-                alt.Chart(score_long)
-                .mark_line(point=True, strokeWidth=3)
-                .encode(
-                    x=alt.X("Jour:T", title="Date"),
-                    y=alt.Y("Note:Q", title="Note / 10", scale=alt.Scale(domain=[0, 10])),
-                    color=alt.Color(
-                        "Série:N",
-                        scale=alt.Scale(
-                            domain=["Note moyenne", "Moyenne mobile"],
-                            range=["#22c55e", "#0f766e"],
-                        ),
-                        title=None,
-                    ),
-                    tooltip=["Jour:T", "Série:N", alt.Tooltip("Note:Q", format=".1f")],
-                )
-                .properties(height=310)
-            )
-            st.altair_chart(score_chart)
-
-    with weight_chart_col:
-        st.subheader("Évolution du poids")
-        if not weights:
-            st.info("Ajoutez une première mesure pour afficher la courbe.")
-        else:
-            weight_frame = pd.DataFrame(weights)
-            weight_frame["Date"] = pd.to_datetime(weight_frame["measured_on"])
-            weight_chart = (
-                alt.Chart(weight_frame)
-                .mark_line(point=True, strokeWidth=3, color="#f97316")
-                .encode(
-                    x=alt.X("Date:T", title="Date"),
-                    y=alt.Y("weight_kg:Q", title="Poids (kg)", scale=alt.Scale(zero=False)),
-                    tooltip=["Date:T", alt.Tooltip("weight_kg:Q", title="Poids", format=".1f")],
-                )
-                .properties(height=310)
-            )
-            st.altair_chart(weight_chart)
+            .properties(height=310)
+        )
+        st.altair_chart(weight_chart)
 
     if not st.toggle("Afficher les analyses détaillées", value=False):
         st.stop()
