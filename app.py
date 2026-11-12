@@ -265,6 +265,9 @@ et le niveau d'activité habituel peut déjà en intégrer une partie : ne les c
 pas automatiquement deux fois et ne recommande pas de compenser chaque calorie.
 Les aliments personnels enregistrés peuvent préciser les calculs des produits
 récurrents, mais leur étiquette peut évoluer.
+Le nombre de repas par jour est libre. Ne demande jamais de compléter les jours
+précédents pour atteindre un quota de repas et ne qualifie pas un jour de
+« mauvais » à cause d'un petit déjeuner ou d'un dîner non pris.
 
 Retourne uniquement un objet JSON valide, sans Markdown ni texte additionnel,
 avec exactement ce schéma :
@@ -324,8 +327,9 @@ RÈGLES DE FOND
 - Réponds d'abord à la question posée, puis explique brièvement ce que les
   données du journal permettent réellement de conclure.
 - Distingue toujours les aliments réellement consignés, les estimations de
-  portions et les jours incomplets. Ne transforme jamais une absence de saisie
-  en absence d'alimentation.
+  portions et les jours sans saisie. Le nombre de repas est libre : ne signale
+  jamais un repas « manquant » et ne suppose pas trois repas quotidiens.
+  Ne transforme jamais une absence de saisie en absence d'alimentation.
 - Pour les calories, macronutriments et projections de poids, parle de repères
   éducatifs et d'estimations, jamais de prescription.
 - Les aliments de la bibliothèque personnelle ont été saisis par l'utilisateur.
@@ -414,6 +418,56 @@ Retourne uniquement un objet JSON valide, sans Markdown. Exemple :
   }]
 }
 """.strip()
+
+DAILY_NOTE_SYSTEM_PROMPT = """
+Tu répartis une note personnelle en faits distincts. Réponds uniquement en JSON.
+Conserve les dates, heures, quantités et formulations utiles dans chaque extrait.
+Un repas non pris n'est pas un repas. Ne déduis aucune activité ni selle non décrite.
+Pour la natation, extrais les minutes ; pour la marche, les pas ; pour le vélo,
+les kilomètres et les minutes si précisés. Une activité sans quantité mesurable
+reste dans le texte mais ne doit pas être enregistrée comme dépense calculée.
+Les dates relatives se rapportent à la date locale de référence fournie.
+N'invente jamais une durée, un nombre de pas, une distance ou une intensité.
+""".strip()
+
+DAILY_NOTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "repas_et_symptomes": {"type": "string"},
+        "selles": {"type": "string"},
+        "activites": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "type": {"type": "string", "enum": ACTIVITY_TYPES},
+                    "intensite": {"type": "string", "enum": ACTIVITY_INTENSITIES},
+                    "minutes": {"type": "number"},
+                    "pas": {"type": "integer"},
+                    "kilometres": {"type": "number"},
+                    "description": {"type": "string"},
+                },
+                "required": ["date", "type", "intensite", "minutes", "pas", "kilometres", "description"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["repas_et_symptomes", "selles", "activites"],
+    "additionalProperties": False,
+}
+
+
+def parse_daily_note(settings: AISettings, text: str) -> dict[str, Any]:
+    reference = datetime.now(LOCAL_TIMEZONE).isoformat(timespec="minutes")
+    payload, _, _ = call_ai(
+        settings,
+        DAILY_NOTE_SYSTEM_PROMPT,
+        f"Date et heure locales : {reference}\nTexte : {text.strip()}",
+        DAILY_NOTE_SCHEMA,
+        "daily_note",
+    )
+    return payload
 
 FOOD_LABEL_SYSTEM_PROMPT = """
 Tu extrais les données d'une étiquette nutritionnelle décrite en français ou en
@@ -3907,7 +3961,7 @@ def build_chat_journal_context(
                 "glucides_g": profile.get("carbs_goal_g"),
                 "proteines_g": profile.get("protein_goal_g"),
                 "lipides_g": profile.get("fat_goal_g"),
-                "repas_habituels": profile.get("meals_per_day"),
+                "repas_habituels": "libre, sans quota quotidien",
             },
         },
         "poids_recents": [
@@ -3962,8 +4016,8 @@ def build_chat_journal_context(
             for food in favorite_foods[:40]
         ],
         "limite_interpretation": (
-            "Les jours ou repas non consignés rendent les cumuls incomplets et "
-            "ne signifient pas une consommation nulle."
+            "Le nombre de repas par jour est libre. Ne jamais reprocher de "
+            "repas manquant. Les jours sans saisie ne prouvent rien sur les apports."
         ),
     }
 
@@ -4421,7 +4475,14 @@ def build_weight_projection(
     profile: dict[str, Any],
     horizon_days: int = 84,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Projette prudemment le poids à partir des journées alimentaires complètes."""
+    """N'extrapole pas le poids depuis un nombre supposé de repas."""
+    return pd.DataFrame(), {
+        "reason": (
+            "La projection fondée sur les calories consignées est suspendue : "
+            "le nombre de repas varie librement. Suivez plutôt l'évolution "
+            "de vos pesées sur plusieurs semaines."
+        )
+    }
     if not weights:
         return pd.DataFrame(), {"reason": "Ajoutez d'abord une mesure de poids."}
 
@@ -5237,6 +5298,26 @@ active_window_label = eating_window_details(
 )[0]
 
 if main_section == "Aujourd'hui":
+    quick_row = st.columns(2, gap="small", wrap=False)
+    quick_row[0].button(
+        "Mon journal", icon=":material/menu_book:", width="stretch",
+        on_click=lambda: st.session_state.update(main_navigation_mobile="Journal"),
+    )
+    quick_row[1].button(
+        "Parler au coach", icon=":material/chat:", width="stretch",
+        on_click=lambda: st.session_state.update(main_navigation_mobile="Coach"),
+    )
+    quick_row = st.columns(2, gap="small", wrap=False)
+    quick_row[0].button(
+        "Mon poids", icon=":material/monitoring:", width="stretch",
+        on_click=lambda: st.session_state.update(main_navigation_mobile="Progrès"),
+    )
+    quick_row[1].button(
+        "Mes aliments", icon=":material/grocery:", width="stretch",
+        on_click=lambda: st.session_state.update(
+            main_navigation_mobile="Coach", assistant_navigation_mobile="Mes aliments"
+        ),
+    )
     favorite_foods = load_favorite_foods()
     favorite_food_by_id = {int(food["id"]): food for food in favorite_foods}
     today_value = date.today()
@@ -5326,9 +5407,7 @@ sport sont affichées séparément pour éviter de compter deux fois la dépense
     left = st.container()
     with left:
         st.subheader("Noter maintenant")
-        st.caption(
-            "Repas, faim ou inconfort : écrivez naturellement, avec l'heure si vous la connaissez."
-        )
+        st.caption("Repas, sport, faim ou selles : racontez votre journée en une phrase.")
         if st.session_state.pop("clear_meal_form", False):
             st.session_state["meal_text_input"] = ""
             st.session_state["product_query_input"] = ""
@@ -5338,11 +5417,11 @@ sport sont affichées séparément pour éviter de compter deux fois la dépense
         selected_food_ids: list[int] = []
         with st.form("meal_form", clear_on_submit=False):
             meal_text = st.text_area(
-                "Repas, faim ou inconfort digestif",
+                "Votre récit du jour",
                 height=155,
                 placeholder=(
-                    "Ex. : Hier à 12 h 30, j'ai mangé 3 œufs et un avocat. "
-                    "Aujourd'hui à 19 h 45, petite douleur du nombril au sternum."
+                    "Ex. : À midi j'ai mangé des œufs et de l'avoine. "
+                    "J'ai nagé 45 minutes, puis selle souple à 16 h."
                 ),
                 label_visibility="collapsed",
                 key="meal_text_input",
@@ -5379,39 +5458,82 @@ sport sont affichées séparément pour éviter de compter deux fois la dépense
 
         if analyze_clicked:
             if not meal_text.strip():
-                st.warning("Décrivez un repas, une faim ou un inconfort digestif.")
+                st.warning("Décrivez ce que vous avez mangé, fait ou ressenti.")
             elif not ai_settings.has_any_key:
                 st.error("Ajoutez une clé DeepSeek, Gemini ou Groq dans la barre latérale.")
             else:
                 with st.spinner("Interprétation de votre texte…"):
                     try:
+                        note_parts = parse_daily_note(ai_settings, meal_text)
+                        meal_part = str(note_parts.get("repas_et_symptomes") or "").strip()
+                        bowel_part = str(note_parts.get("selles") or "").strip()
                         intake = {
-                            "events": [],
-                            "contains_meal": True,
-                            "meal_description": meal_text.strip(),
+                            "events": [], "contains_meal": False, "meal_description": ""
                         }
-                        if text_may_contain_symptom(meal_text):
-                            intake = parse_intake_text(ai_settings, meal_text)
+                        if meal_part:
+                            intake = parse_intake_text(ai_settings, meal_part)
                             saved_count, symptom_questions = save_ready_symptom_events(
-                                intake["events"], meal_text, load_meals()
+                                intake["events"], meal_part, load_meals()
                             )
                             if saved_count:
                                 st.success(
                                     f"{saved_count} signalement"
                                     f"{'s' if saved_count > 1 else ''} d'inconfort ou "
                                     f"de faim enregistré{'s' if saved_count > 1 else ''} "
-                                    "dans l'onglet Faim & douleurs."
+                                    "dans le journal."
                                 )
                             if symptom_questions:
                                 st.warning(
                                     "Précision nécessaire avant d'enregistrer :\n\n- "
                                     + "\n- ".join(symptom_questions)
                                 )
-                            if not intake["events"] and not intake["contains_meal"]:
-                                st.info(
-                                    "Je n'ai identifié ni repas ni signalement exploitable. "
-                                    "Précisez ce qui s'est passé, le moment et l'intensité."
+                        if bowel_part:
+                            bowel_extraction = parse_bowel_text(ai_settings, bowel_part)
+                            bowel_saved, bowel_questions = save_ready_bowel_events(
+                                bowel_extraction["events"], bowel_part
+                            )
+                            if bowel_saved:
+                                st.success(f"{bowel_saved} selle(s) enregistrée(s).")
+                            if bowel_questions:
+                                st.warning("Selles : " + " ; ".join(bowel_questions))
+                        activity_saved = 0
+                        for activity in note_parts.get("activites", []):
+                            try:
+                                activity_date = date.fromisoformat(str(activity["date"]))
+                                if activity_date > date.today():
+                                    raise ValueError("La date d'activité est dans le futur.")
+                                activity_kind = str(activity["type"])
+                                minutes = float(activity.get("minutes") or 0)
+                                steps = int(activity.get("pas") or 0)
+                                distance = float(activity.get("kilometres") or 0)
+                                if (activity_kind == "Natation" and minutes <= 0) or (
+                                    activity_kind == "Marche" and steps <= 0
+                                ) or (activity_kind == "Vélo" and distance <= 0):
+                                    raise ValueError("Précisez la durée, les pas ou la distance.")
+                                recent_weights = load_weights()
+                                activity_weight = float(
+                                    recent_weights[-1]["weight_kg"] if recent_weights else 70.0
                                 )
+                                save_activity_event(
+                                    activity_date, activity_kind, activity_weight,
+                                    str(activity["intensite"]), minutes, steps,
+                                    distance, str(activity.get("description") or ""),
+                                )
+                                activity_saved += 1
+                                st.success(f"{activity_kind} enregistré dans le journal.")
+                            except (KeyError, TypeError, ValueError) as error:
+                                st.warning(f"Activité non enregistrée : {error}")
+
+                        if not meal_part and not bowel_part and not note_parts.get("activites"):
+                            st.info("Aucun événement reconnu. Ajoutez une date, une heure ou une quantité.")
+
+                        if not intake["contains_meal"] and (
+                            activity_saved or (bowel_part and bowel_saved)
+                            or (meal_part and saved_count)
+                        ):
+                            st.session_state["clear_meal_form"] = True
+                            st.session_state["meal_save_notice"] = "Votre récit a été ajouté au journal."
+                            st.rerun()
 
                         if intake["contains_meal"]:
                             meal_description = intake["meal_description"]
@@ -6674,8 +6796,7 @@ if main_section == "Coach" and assistant_section == "Discussion":
             st.markdown(
                 "**Vous pouvez demander, par exemple :** une lecture de la "
                 "semaine, une explication d'un écart ou une idée simple pour le "
-                "prochain repas. L'assistant signalera clairement les données "
-                "manquantes au lieu de les inventer."
+                "prochain repas. Décrivez ce qui compte pour vous aujourd'hui."
             )
         if ai_settings.has_any_key:
             selected_suggestion = st.pills(
@@ -7056,14 +7177,7 @@ if main_section == "Progrès":
                     "Lipides (g/jour)", 0.0, 1000.0,
                     value=float(profile["fat_goal_g"]), step=5.0,
                 )
-            meals_per_day = st.number_input(
-                "Repas habituels par jour",
-                min_value=1,
-                max_value=8,
-                value=int(profile["meals_per_day"]),
-                step=1,
-                help="Sert uniquement à calculer le repère par repas.",
-            )
+            meals_per_day = int(profile.get("meals_per_day") or 1)
             st.caption(
                 "Ces chiffres sont des repères éducatifs pour comparer vos "
                 "journées, pas une prescription nutritionnelle personnalisée."
@@ -7240,12 +7354,14 @@ if main_section == "Progrès":
             )
             st.altair_chart(weight_chart)
 
+    if not st.toggle("Afficher les analyses détaillées", value=False):
+        st.stop()
+
     st.divider()
     st.subheader("Projection indicative du poids")
     st.caption(
-        "Cette simulation utilise uniquement les journées où tous vos repas "
-        "habituels ont été consignés. Elle illustre votre plan — perte jusqu'à "
-        "la cible puis maintien — et non une promesse ni une prescription."
+        "Une projection calorique ne peut pas déduire quels repas vous avez "
+        "choisi de prendre. La courbe des pesées reste le suivi principal."
     )
     projection_period = st.segmented_control(
         "Horizon de projection",
@@ -7605,7 +7721,7 @@ if main_section == "Progrès":
     macro_metric_cols[1].metric("Glucides / jour", f"{profile['carbs_goal_g']:.0f} g")
     macro_metric_cols[2].metric("Protéines / jour", f"{profile['protein_goal_g']:.0f} g")
     macro_metric_cols[3].metric("Lipides / jour", f"{profile['fat_goal_g']:.0f} g")
-    st.caption(f"Repère actuel : {int(profile['meals_per_day'])} repas par jour.")
+    st.caption("Les repas sont libres : ce repère par repas est purement indicatif.")
 
     st.markdown("#### Où en êtes-vous par rapport aux objectifs ?")
     indicator_period = st.segmented_control(
