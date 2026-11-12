@@ -41,6 +41,7 @@ from supabase_sync import (
     sign_in,
     update_password,
 )
+from weight_forecast import estimate_goal_date, recent_logged_calorie_days
 
 
 APP_TITLE = "Coach Glycémie"
@@ -4475,16 +4476,15 @@ def build_weight_projection(
     profile: dict[str, Any],
     horizon_days: int = 84,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """N'extrapole pas le poids depuis un nombre supposé de repas."""
-    return pd.DataFrame(), {
-        "reason": (
-            "La projection fondée sur les calories consignées est suspendue : "
-            "le nombre de repas varie librement. Suivez plutôt l'évolution "
-            "de vos pesées sur plusieurs semaines."
-        )
-    }
+    """Projette le poids depuis les journées consignées, sans quota de repas."""
     if not weights:
         return pd.DataFrame(), {"reason": "Ajoutez d'abord une mesure de poids."}
+    today = pd.Timestamp(datetime.now(LOCAL_TIMEZONE).date())
+    last_pesee = date.fromisoformat(str(weights[-1]["measured_on"])[:10])
+    if (today.date() - last_pesee).days > 30:
+        return pd.DataFrame(), {
+            "reason": "Ajoutez une pesée récente pour recalculer la projection."
+        }
 
     daily = build_daily_calorie_data(meals, profile)
     if daily.empty:
@@ -4492,19 +4492,13 @@ def build_weight_projection(
             "reason": "Aucune journée ne comporte encore d'estimation calorique."
         }
 
-    expected_meals = max(1, int(profile.get("meals_per_day") or 1))
-    today = pd.Timestamp(date.today())
-    complete_days = daily[
-        (daily["Repas estimés"] >= expected_meals)
-        & (daily["Date"] <= today)
-        & (daily["Date"] >= today - pd.Timedelta(days=28))
-    ].tail(14)
-    if len(complete_days) < 3:
+    complete_days = recent_logged_calorie_days(daily, as_of=today.date())
+    if len(complete_days) < 10:
         return pd.DataFrame(), {
             "reason": (
-                "Il faut au moins 3 journées complètes sur les 28 derniers jours "
-                f"({expected_meals} repas consignés par jour) pour éviter une "
-                "projection artificiellement basse."
+                "La date demande au moins 10 journées avec des repas consignés "
+                "sur les 14 derniers jours calendaires, quel que soit le nombre "
+                "de repas par jour."
             ),
             "complete_days": int(len(complete_days)),
         }
@@ -4534,7 +4528,9 @@ def build_weight_projection(
     )
 
     def projected_weight(day_number: int, intake: float) -> float:
-        energy_gap = intake - maintenance
+        # Un écart calorique extrême ou une portion mal estimée ne doit pas
+        # produire une date artificiellement proche.
+        energy_gap = max(-500.0, min(500.0, intake - maintenance))
         adaptive_days = adaptation_days * (
             1 - math.exp(-day_number / adaptation_days)
         )
@@ -4545,7 +4541,7 @@ def build_weight_projection(
             return max(raw_projection, target_weight)
         return raw_projection
 
-    start_date = date.today()
+    start_date = today.date()
     rows = []
     for day_number in range(max(1, int(horizon_days)) + 1):
         central = projected_weight(day_number, average_intake)
@@ -5305,9 +5301,10 @@ if main_section == "Saisir un repas":
     favorite_foods = load_favorite_foods()
     favorite_food_by_id = {int(food["id"]): food for food in favorite_foods}
     today_value = date.today()
+    all_meals = load_meals()
     today_meals = [
         meal
-        for meal in load_meals()
+        for meal in all_meals
         if (meal_time := meal_occurred_at(meal)) is not None
         and meal_time.date() == today_value
     ]
@@ -5355,6 +5352,73 @@ if main_section == "Saisir un repas":
         f"{len(today_meals)} repas notés · {today_calories:.0f} / "
         f"{calorie_target:.0f} kcal estimées"
     )
+    target_weight_kg = float(
+        active_profile.get("target_weight_kg") or DEFAULT_TARGET_WEIGHT_KG
+    )
+    weights_for_goal = load_weights()
+    goal_date = estimate_goal_date(
+        weights_for_goal, target_weight_kg,
+        str(active_profile.get("objective") or ""),
+        as_of=datetime.now(LOCAL_TIMEZONE).date(),
+    )
+    calorie_projection, calorie_meta = build_weight_projection(
+        all_meals, weights_for_goal, active_profile, 365
+    )
+    projected_arrival = None
+    if not calorie_projection.empty:
+        objective = str(active_profile.get("objective") or "")
+        if objective == "Perdre du poids progressivement":
+            arrivals = calorie_projection[
+                calorie_projection["Projection"] <= target_weight_kg + 0.001
+            ]
+        elif objective == "Prendre du poids progressivement":
+            arrivals = calorie_projection[
+                calorie_projection["Projection"] >= target_weight_kg - 0.001
+            ]
+        else:
+            arrivals = pd.DataFrame()
+        if not arrivals.empty:
+            projected_arrival = arrivals.iloc[0]["Date"].date()
+
+    if goal_date.status == "reached":
+        st.markdown(
+            f"**🎯 Poids cible {target_weight_kg:g} kg atteint "
+            f"à la dernière pesée du {goal_date.estimated_date:%d/%m/%Y}.**"
+        )
+    elif projected_arrival:
+        st.markdown(
+            f"**🎯 Poids cible {target_weight_kg:g} kg · "
+            f"date estimée : vers le {projected_arrival:%d/%m/%Y}**"
+        )
+        st.caption(
+            f"Calcul fondé sur {calorie_meta['complete_days']} journées "
+            "renseignées parmi les 14 derniers jours et la dernière pesée. "
+            "Le nombre de repas par jour peut varier ; la date reste indicative."
+        )
+    elif calorie_projection.empty and goal_date.status == "estimated" and goal_date.estimated_date:
+        st.markdown(
+            f"**🎯 Poids cible {target_weight_kg:g} kg · "
+            f"date estimée : vers le {goal_date.estimated_date:%d/%m/%Y}**"
+        )
+        st.caption(
+            f"Extrapolation des {goal_date.measurement_count} pesées récentes "
+            f"({goal_date.weekly_change_kg:+.2f} kg/semaine). "
+            "Cette date évoluera avec vos prochaines pesées."
+        )
+    elif goal_date.status != "not_applicable":
+        guidance = {
+            "insufficient": "Ajoutez au moins 3 pesées réparties sur 3 semaines.",
+            "stale": "Ajoutez une pesée récente pour actualiser la tendance.",
+            "opposite": "La tendance des pesées ne va pas encore vers la cible.",
+            "unstable": "La tendance des pesées est trop faible ou trop rapide.",
+            "beyond_horizon": "La cible dépasse l'horizon fiable d'un an.",
+        }
+        reason = (
+            "À l'apport récent, la cible n'est pas projetée dans l'année."
+            if not calorie_projection.empty
+            else guidance.get(goal_date.status, str(calorie_meta.get("reason") or ""))
+        )
+        st.caption(f"🎯 Poids cible {target_weight_kg:g} kg · date non estimable. {reason}")
     if last_result := st.session_state.get("last_analysis"):
         st.info(
             f"**Dernier repas : {last_result.get('note', '—')}/10** · "
@@ -7288,8 +7352,8 @@ if main_section in {"Progrès", "Profil"}:
             "Apport moyen consigné",
             f"{projection_meta['average_intake_kcal']:.0f} kcal/j",
             help=(
-                f"Moyenne de {projection_meta['complete_days']} journées complètes "
-                "parmi les 28 derniers jours."
+                f"Moyenne de {projection_meta['complete_days']} journées renseignées "
+                "parmi les 14 derniers jours."
             ),
         )
         projection_metrics[1].metric(
