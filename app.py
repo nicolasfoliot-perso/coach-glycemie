@@ -5371,6 +5371,11 @@ if main_section == "Aujourd'hui":
         f"{len(today_meals)} repas notés · {today_calories:.0f} / "
         f"{calorie_target:.0f} kcal estimées"
     )
+    if last_result := st.session_state.get("last_analysis"):
+        st.info(
+            f"**Dernier repas : {last_result.get('note', '—')}/10** · "
+            f"{last_result.get('commentaire', '')}"
+        )
     with st.expander("Comprendre ma journée", icon=":material/monitoring:"):
         st.metric(
             "Profil glycémique estimé",
